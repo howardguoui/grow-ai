@@ -1,13 +1,16 @@
 # Personal AI Model — Design Spec
 **Date**: 2026-04-14  
 **Status**: Draft — awaiting user approval  
-**Project**: `E:\ClaudeProject\personal-ai`
+**Project**: `E:\ClaudeProject\personal-ai`  
+**License**: MIT (fully open source, free to self-host)
 
 ---
 
 ## 1. Vision
 
-A locally-running personal AI model that grows with its owner. Every Claude Code session automatically feeds compressed insights into the model. The model internalizes 9 book frameworks as its cognitive operating system — making it think, remember, and reason in a specific, personal way. Over time it matures from a 3B model to up to 18B and can be monetized as a SaaS product.
+An open-source, locally-running personal AI model that grows with its owner. Every Claude Code session automatically feeds compressed insights into the model. The model internalizes 9 book frameworks as its cognitive operating system — making it think, remember, and reason in a specific, personal way. Over time it matures from a 3B model to up to 18B.
+
+**Goal**: Become the best personal AI growth tool on GitHub. Community adoption first, hosted platform revenue second.
 
 ---
 
@@ -217,18 +220,37 @@ When user sends a prompt, the model:
 
 ---
 
-## 9. Monetization (Phase 2)
+## 9. GitHub-First Growth Strategy
 
-**Not selling raw model weights** (privacy risk). Instead:
+### Why open source wins here
+- Novel concept ("AI that reads books and learns from your work sessions") → viral on GitHub, HN, Reddit
+- Free to self-host → zero friction adoption → stars accumulate
+- Community contributes new book framework packs → moat deepens
+- Reference: `virattt/ai-hedge-fund` — same model, thousands of stars
+
+### What makes it star-worthy
+1. **The concept is the hook** — "Your AI gets smarter every time you use Claude Code"
+2. **Works out of the box** — one command install, runs locally on Ollama
+3. **Visible growth** — users can see the model improve (before/after benchmark comparisons)
+4. **Book framework packs** — community can add frameworks from other books (plugin system)
+5. **Great README** — demo GIF showing model improving over weeks
+
+### Moat (hard to replicate)
+- First mover + community = the canonical repo for this concept
+- Curated 9-book training dataset (quality takes months to build, can't be cloned)
+- Claude Code hook integration maintained as Claude evolves
+- Community framework packs accumulate over time
+
+### Monetization (Phase 2 — after community traction)
+**Model**: Open core + hosted platform
 
 | Tier | Price | What you get |
 |------|-------|-------------|
-| Free | $0 | Local training only, Ollama deploy |
-| Builder | $29/mo | Cloud training acceleration + personal API endpoint |
-| Pro | $99/mo | Marketplace listing — sell model capabilities to others |
-| B2B | Custom | License domain-expert model to a team |
+| Self-host | Free | Full open source, run on your own machine |
+| Hosted | $4.99/mo | Deploy on our platform — no GPU, no setup, always on |
 
-**Target customer**: Knowledge workers, developers, consultants who want a private AI that reasons in their personal style — without sending data to the cloud.
+**When to launch hosted**: After 500+ GitHub stars (proves demand exists).  
+**Target customer**: People who love the concept but don't have a GPU or don't want the setup hassle.
 
 ---
 
