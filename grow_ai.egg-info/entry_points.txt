@@ -1,0 +1,3 @@
+[console_scripts]
+grow-ai-capture = grow_ai.capture:main
+grow-ai-install = scripts.install_hook:main

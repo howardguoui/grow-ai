@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: grow-ai
+Version: 0.1.0
+Summary: Personal AI that grows from your Claude Code sessions
+Requires-Python: >=3.11
+Requires-Dist: httpx>=0.27
+Requires-Dist: sqlite-vec>=0.1.6
