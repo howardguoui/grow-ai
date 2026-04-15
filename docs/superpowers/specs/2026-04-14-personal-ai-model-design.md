@@ -119,8 +119,18 @@ Deterministic regex pass before any compression or storage:
 - Anything matching scrubber patterns is replaced inline before the insight hits SQLite
 
 ### 5.1 Hook — Capture
-- **Event**: `PostToolUse` (captures tool name, input, output, success/fail)
-- **Delta-of-Success detection**: If a tool fails and then succeeds within 3 turns → flag as `error_recovery=true` → +20 quality score (Antifragile signal)
+- **Mechanism**: Claude Code native `PostToolUse` hook defined in `~/.claude/settings.json`. Claude Code calls a Python script via stdin with tool data as JSON after every tool execution. No PTY wrapper or MCP injection needed — this is a first-class supported feature.
+- **Hook config**:
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": ".*", "hooks": [{ "type": "command", "command": "python ~/.grow-ai/capture.py" }] }
+    ]
+  }
+}
+```
+- **Delta-of-Success detection**: If a tool fails and then succeeds within 3 turns → flag as `error_recovery=true` → +20 quality score (Antifragile signal). The capture script maintains a small rolling state file (`~/.grow-ai/state.json`) tracking last 3 tool outcomes per session.
 - **Sliding window**: Last 10 messages as context
 - **Format captured**: `{ tool, action, result, timestamp, session_id, error_recovery }`
 
@@ -138,11 +148,15 @@ Example: "Edit src/app.js: Added React auth hook — token stored, session persi
 - Prompt: "Summarize the key learning from this interaction in ≤20 words"
 
 ### 5.2b Semantic De-duplication (NEW — runs after compression)
-Before writing to SQLite, check cosine similarity against existing insights via sqlite-vec:
-- If similarity > 0.95 → **discard** new insight, increment `reinforcement_count` on existing row
-- If 0.80–0.95 → **merge** (update existing insight's `quality_score += 3`)
-- If < 0.80 → **store** as new insight
+Requires a dedicated **embedding model** (not Qwen2.5-3B — that is a generative model, not an embedding model):
+- **Embedding model**: `nomic-embed-text` via Ollama (768-dim, ~274MB, runs without occupying significant VRAM)
+- Every compressed insight is embedded via `ollama embed nomic-embed-text` before the SQLite write
+- Cosine similarity checked against existing vectors in sqlite-vec:
+  - similarity > 0.95 → **discard**, increment `reinforcement_count` on existing row
+  - 0.80–0.95 → **merge** (update existing insight's `quality_score += 3`)
+  - < 0.80 → **store** as new insight with its vector
 - Prevents data noise from working on the same bug for hours
+- sqlite-vec stores vectors inline in the same `insights.db` — no separate process
 
 ### 5.3 Quality Scoring
 Each insight is scored against signal weights:
@@ -202,14 +216,31 @@ Trigger LoRA training when ANY of:
 - 7 days elapsed since last run
 - Manual `/finetune` command
 
-### 5.6 Training Format
-Insights are expanded to 50-100 word instruction pairs for LoRA:
+### 5.6 Training Format — Async Expansion (CLARIFIED)
+The 20-word compressed insight is **not** expanded during the capture session. Expansion is a batch job that runs immediately before Unsloth fine-tuning triggers — decoupled from the live hook entirely.
+
+**Timing**:
+1. Hook fires → stores compressed insight + full context → done (no LLM expansion, zero lag)
+2. Fine-tune trigger fires (50 insights or 7 days) → expansion batch runs first → then Unsloth trains
+
+**Expansion batch** (`expand.py`):
+- Reads all unexpanded insights from SQLite (`lora_pair IS NULL`)
+- For each: calls Qwen2.5-3B via Ollama API to generate a 50-100 word instruction pair using `compressed` + `full_context` + relevant framework tags as prompt
+- Writes result back to `insights.lora_pair` column
+- Then hands the full expanded dataset to Unsloth
+
+**Expanded format**:
 ```json
 {
   "instruction": "How should I approach debugging a React hook that causes infinite re-renders?",
   "input": "",
   "output": "Apply Systems Thinking: identify the feedback loop first. Map what triggers the effect, what the effect changes, and whether that change re-triggers. Use spaced debugging — add one console.log at a time and let the pattern emerge before fixing."
 }
+```
+
+**Schema addition** (to `insights` table):
+```sql
+lora_pair TEXT DEFAULT NULL  -- NULL until expansion batch runs
 ```
 
 ---
@@ -318,13 +349,15 @@ Responses are stored verbatim. Users can scroll a timeline and see the model evo
 
 | Component | Technology | Decision |
 |-----------|-----------|----------|
-| Base model | Qwen2.5-3B (Ollama) | — |
-| Fine-tuning | Unsloth + LoRA | Unsloth: best memory efficiency on RTX 5070 Ti, handles 7B/14B without OOM |
-| Storage | SQLite (insights + vectors) | sqlite-vec extension for RAG — single file, simple backup, local-first |
-| Hook system | Claude Code `PostToolUse` hook (Python) | — |
-| Privacy scrubber | Python regex (pre-compression) | No LLM calls, <5ms |
-| Compression | Rule-based → Qwen2.5-3B fallback | — |
-| Semantic dedup | sqlite-vec cosine similarity | Same DB, no extra process |
+| Base model | Qwen2.5-3B (Ollama) | Generative model for responses + LLM fallback compression |
+| Embedding model | `nomic-embed-text` (Ollama) | 768-dim vectors for semantic dedup + RAG; ~274MB; not Qwen2.5 (generative ≠ embedding) |
+| Fine-tuning | Unsloth + LoRA | Best memory efficiency on RTX 5070 Ti; no OOM on 7B/14B |
+| Storage | SQLite + sqlite-vec extension | Single-file DB for insights, vectors, growth log — trivial backup |
+| Hook system | Claude Code `PostToolUse` hook → Python `capture.py` | Native Claude Code hook via `settings.json`; JSON over stdin; no PTY/MCP needed |
+| Privacy scrubber | Python regex in `capture.py` | No LLM calls, <5ms, runs first |
+| Compression | Rule-based → Qwen2.5-3B fallback | Runs during capture session |
+| LoRA pair expansion | Qwen2.5-3B batch job (`expand.py`) | Runs async before fine-tune trigger — decoupled from live session |
+| Semantic dedup | nomic-embed-text + sqlite-vec cosine sim | Same DB, no extra process |
 | Training runtime | Python + Unsloth + transformers | — |
 | Hardware | RTX 5070 Ti (16GB VRAM) | — |
 | API server | FastAPI | — |
