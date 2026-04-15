@@ -15,6 +15,7 @@ def db():
     if not HAS_DB:
         pytest.skip("grow_ai.db not yet implemented")
     conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
