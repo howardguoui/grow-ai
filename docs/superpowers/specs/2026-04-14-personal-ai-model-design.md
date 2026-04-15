@@ -62,31 +62,46 @@ The model's reasoning is grounded in 4 domains:
 Claude Code Session
         │
         ▼ (PostToolUse hook)
+  ┌─────────────────┐
+  │ Privacy Scrubber│  ← regex masks API keys, tokens, PII
+  └──────┬──────────┘
+         │
+         ▼
   ┌─────────────┐
   │  Compressor │  ← rule-based extraction + LLM fallback
   │  (20 words) │
   └──────┬──────┘
          │
          ▼
+  ┌──────────────────┐
+  │  Semantic Dedup  │  ← cosine sim check via sqlite-vec
+  │  discard if >0.95│    or strengthen existing insight weight
+  └──────┬───────────┘
+         │
+         ▼
   ┌─────────────────┐
   │  Quality Filter │  ← scores against 9-book framework signals
-  │  threshold ≥ 15 │
+  │  threshold ≥ 15 │    + temporal decay on older insights
   └──────┬──────────┘
          │ pass          │ fail → discard
          ▼
-  ┌─────────────┐
-  │   SQLite DB │  insights.db
-  │  (~/.claude-ai/)│
-  └──────┬──────┘
+  ┌─────────────────┐
+  │   SQLite DB     │  insights.db (~/.grow-ai/)
+  │ (insight + full │  stores BOTH compressed + full context
+  │  context)       │
+  └──────┬──────────┘
          │
     ┌────┴────┐
     ▼         ▼
-  RAG DB    Fine-tune batch
-(ChromaDB)  (every 50 insights OR 7 days)
+sqlite-vec  Fine-tune batch
+ (RAG)     (every 50 insights OR 7 days)
     │              │
     ▼              ▼
-Immediate      LoRA training
+Immediate      LoRA training (Unsloth)
 retrieval      (RTX 5070 Ti)
+                   │
+                   ▼
+            Growth Log benchmark
                    │
                    ▼
             Ollama model reload
@@ -96,10 +111,18 @@ retrieval      (RTX 5070 Ti)
 
 ## 5. Data Pipeline Detail
 
+### 5.0 Privacy Scrubber (NEW — runs before everything)
+Deterministic regex pass before any compression or storage:
+- Masks: API keys, tokens, passwords, env vars, IP addresses, emails, file paths with credentials
+- Pattern: `sk-[a-zA-Z0-9]{32,}` → `[API_KEY]`, `Bearer [token]` → `[AUTH_TOKEN]`
+- Zero LLM calls — pure regex, <5ms
+- Anything matching scrubber patterns is replaced inline before the insight hits SQLite
+
 ### 5.1 Hook — Capture
 - **Event**: `PostToolUse` (captures tool name, input, output, success/fail)
+- **Delta-of-Success detection**: If a tool fails and then succeeds within 3 turns → flag as `error_recovery=true` → +20 quality score (Antifragile signal)
 - **Sliding window**: Last 10 messages as context
-- **Format captured**: `{ tool, action, result, timestamp, session_id }`
+- **Format captured**: `{ tool, action, result, timestamp, session_id, error_recovery }`
 
 ### 5.2 Compression — 20-Word Insight
 Two-stage process:
@@ -114,6 +137,13 @@ Example: "Edit src/app.js: Added React auth hook — token stored, session persi
 - Only fires if Stage 1 produces generic/low-signal output
 - Prompt: "Summarize the key learning from this interaction in ≤20 words"
 
+### 5.2b Semantic De-duplication (NEW — runs after compression)
+Before writing to SQLite, check cosine similarity against existing insights via sqlite-vec:
+- If similarity > 0.95 → **discard** new insight, increment `reinforcement_count` on existing row
+- If 0.80–0.95 → **merge** (update existing insight's `quality_score += 3`)
+- If < 0.80 → **store** as new insight
+- Prevents data noise from working on the same bug for hours
+
 ### 5.3 Quality Scoring
 Each insight is scored against signal weights:
 
@@ -121,10 +151,13 @@ Each insight is scored against signal weights:
 |--------|--------|
 | Tool type (Edit/Write > Read) | +10 |
 | Error recovery (fixed a bug) | +15 |
+| Delta-of-Success (fail → fix within 3 turns) | +20 |
 | New file created | +12 |
 | Output size (>50 lines) | +5 |
 | Framework keyword detected | +8 per match |
 | Repeated/boilerplate action | -10 |
+
+**Temporal decay**: Quality score of stored insights decays by 2% per week. Insights > 6 months old have ~50% influence on LoRA vs. recent ones. Allows model to "grow out of" old habits naturally.
 
 **Threshold**: Score ≥ 15 → store. Score < 15 → discard.
 
@@ -134,9 +167,11 @@ Each insight is scored against signal weights:
 CREATE TABLE insights (
   id INTEGER PRIMARY KEY,
   compressed TEXT NOT NULL,        -- the 20-word insight
-  full_context TEXT,               -- original capture (for retraining)
+  full_context TEXT NOT NULL,      -- original capture (always stored — disk is cheap)
   framework_tags TEXT,             -- JSON array: ["atomic_habits", "make_it_stick"]
   quality_score INTEGER,
+  reinforcement_count INTEGER DEFAULT 0,  -- how many deduped near-duplicates merged in
+  error_recovery INTEGER DEFAULT 0,       -- 1 if this was a fail→fix insight
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -148,6 +183,16 @@ CREATE TABLE fine_tune_batches (
   completed_at DATETIME,
   model_version TEXT,
   status TEXT                      -- queued, running, done, failed
+);
+
+-- growth_log table (benchmarks)
+CREATE TABLE growth_log (
+  id INTEGER PRIMARY KEY,
+  insight_count INTEGER,           -- total insights at time of benchmark
+  model_version TEXT,
+  question_id INTEGER,             -- 1-5 (the 5 benchmark questions)
+  response TEXT,                   -- model's answer
+  recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -180,11 +225,11 @@ The model cannot literally grow — it upgrades to a larger base at milestones:
 | 2 | Qwen2.5-14B | ~6-9 months | ~12GB |
 | 3 | Qwen2.5-18B | ~12+ months | ~16GB |
 
-**Upgrade process**:
-1. Merge current LoRA adapter into old base → export merged weights
-2. Knowledge-distill merged model onto new base (transfer learning)
-3. Train fresh LoRA adapter on new base
-4. Deploy on Ollama, retire old model
+**Upgrade process (v1 — simple full re-train, no distillation)**:
+1. Export full accumulated SQLite insights dataset as JSONL
+2. Fine-tune new base model (e.g. 7B) directly on the full dataset via Unsloth
+3. Deploy on Ollama, retire old model
+4. The insights dataset IS the knowledge transfer — no distillation complexity needed in v1
 
 **Catastrophic forgetting prevention**: Replay buffer — every LoRA training run uses 50% historical insights + 50% new insights.
 
@@ -220,6 +265,20 @@ When user sends a prompt, the model:
 
 ---
 
+## 8b. Growth Log — Proving the Model Improves
+
+Every 50 insights, the system automatically asks the model the same 5 benchmark questions and logs the response to `growth_log`:
+
+1. "How would you design a feedback loop for a React state manager?"
+2. "You have 3 hours to debug an unknown production error. Walk me through your approach."
+3. "How do you decide when to stop exploring solutions and commit to one?"
+4. "Design a personal learning system for mastering a new programming language in 30 days."
+5. "A habit you built 6 months ago is breaking down. What's your diagnosis and fix?"
+
+Responses are stored verbatim. Users can scroll a timeline and see the model evolve from generic LLM output to framework-grounded reasoning. This is the **star-worthy demo**.
+
+---
+
 ## 9. GitHub-First Growth Strategy
 
 ### Why open source wins here
@@ -237,7 +296,8 @@ When user sends a prompt, the model:
 
 ### Moat (hard to replicate)
 - First mover + community = the canonical repo for this concept
-- Curated 9-book training dataset (quality takes months to build, can't be cloned)
+- **9-Book Reasoning Gold Set** — release the JSONL training dataset as a standalone asset. High-quality reasoning data is rare; community will build ecosystem around it, driving stars independently
+- Curated insights quality takes months to build, can't be cloned
 - Claude Code hook integration maintained as Claude evolves
 - Community framework packs accumulate over time
 
@@ -256,17 +316,19 @@ When user sends a prompt, the model:
 
 ## 10. Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| Base model | Qwen2.5-3B (Ollama) |
-| Fine-tuning | LoRA via Unsloth or LLaMA-Factory |
-| Storage | SQLite (insights) + ChromaDB (RAG vectors) |
-| Hook system | Claude Code `PostToolUse` hook (bash script) |
-| Compression | Python script + Qwen2.5-3B via Ollama API |
-| Training runtime | Python + transformers + peft |
-| Hardware | RTX 5070 Ti (16GB VRAM) |
-| API server | FastAPI (serve personal model endpoint) |
-| Frontend (Phase 2) | Next.js dashboard |
+| Component | Technology | Decision |
+|-----------|-----------|----------|
+| Base model | Qwen2.5-3B (Ollama) | — |
+| Fine-tuning | Unsloth + LoRA | Unsloth: best memory efficiency on RTX 5070 Ti, handles 7B/14B without OOM |
+| Storage | SQLite (insights + vectors) | sqlite-vec extension for RAG — single file, simple backup, local-first |
+| Hook system | Claude Code `PostToolUse` hook (Python) | — |
+| Privacy scrubber | Python regex (pre-compression) | No LLM calls, <5ms |
+| Compression | Rule-based → Qwen2.5-3B fallback | — |
+| Semantic dedup | sqlite-vec cosine similarity | Same DB, no extra process |
+| Training runtime | Python + Unsloth + transformers | — |
+| Hardware | RTX 5070 Ti (16GB VRAM) | — |
+| API server | FastAPI | — |
+| Frontend (Phase 2) | Next.js dashboard | — |
 
 ---
 
@@ -280,8 +342,11 @@ When user sends a prompt, the model:
 
 ---
 
-## 12. Open Questions
+## 12. Resolved Decisions
 
-1. Should Stage 1 compression store the full original context or just the compressed insight? (Storage vs. retraining quality tradeoff)
-2. Which LoRA training library — Unsloth (faster) or LLaMA-Factory (more control)?
-3. Should the RAG DB be ChromaDB or SQLite-vec (simpler, no extra process)?
+| Question | Decision | Reason |
+|----------|----------|--------|
+| Store full context or just compressed? | **Both** | Disk is cheap; full context needed to regenerate better instruction pairs if scoring logic changes later |
+| Unsloth vs LLaMA-Factory? | **Unsloth** | Better memory efficiency on RTX 5070 Ti; handles 7B/14B with larger context without OOM |
+| ChromaDB vs sqlite-vec? | **sqlite-vec** | Single-file stack, trivial backup, fits local-first philosophy |
+| Knowledge distillation on upgrade? | **No — full re-train on new base** | Simpler for v1; accumulated JSONL dataset IS the knowledge transfer |
