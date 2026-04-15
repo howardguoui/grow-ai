@@ -1,7 +1,7 @@
-# Personal AI Model — Design Spec
+# grow-ai — Design Spec
 **Date**: 2026-04-14  
 **Status**: Draft — awaiting user approval  
-**Project**: `E:\ClaudeProject\personal-ai`  
+**Project**: `E:\ClaudeProject\grow-ai`  
 **License**: MIT (fully open source, free to self-host)
 
 ---
