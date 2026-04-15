@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from grow_ai.scorer import score, detect_frameworks, apply_temporal_decay
 
 
@@ -38,13 +38,13 @@ def test_detect_antifragile():
 
 
 def test_temporal_decay_recent():
-    recent = datetime.utcnow() - timedelta(days=3)
+    recent = datetime.now(timezone.utc) - timedelta(days=3)
     decayed = apply_temporal_decay(100, recent)
     expected = 100 * (1 - 0.02 * (3 / 7))
     assert decayed == pytest.approx(expected, rel=0.01)
 
 
 def test_temporal_decay_six_months_halved():
-    old = datetime.utcnow() - timedelta(weeks=26)
+    old = datetime.now(timezone.utc) - timedelta(weeks=26)
     decayed = apply_temporal_decay(100, old)
     assert decayed < 55

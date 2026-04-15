@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 _TOOL_WEIGHTS = {
     "Edit": 10, "Write": 10, "MultiEdit": 12,
@@ -30,7 +30,7 @@ def detect_frameworks(text: str) -> list[str]:
 
 def apply_temporal_decay(base_score: int, created_at: datetime) -> float:
     """Apply 2%/week linear decay to a score based on insight age."""
-    weeks_old = (datetime.utcnow() - created_at).days / 7
+    weeks_old = (datetime.now(timezone.utc) - created_at).days / 7
     decay_factor = max(0.0, 1.0 - (0.02 * weeks_old))
     return base_score * decay_factor
 
