@@ -14,7 +14,7 @@ def db():
     """In-memory SQLite DB with sqlite-vec loaded and schema initialized."""
     if not HAS_DB:
         pytest.skip("grow_ai.db not yet implemented")
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)

@@ -6,11 +6,17 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
     "sqlite-vec>=0.1.6",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
-grow-ai-capture = "grow_ai.capture:main"
-grow-ai-install = "scripts.install_hook:main"
+grow-ai-capture  = "grow_ai.capture:main"
+grow-ai-install  = "scripts.install_hook:main"
+grow-ai-daily    = "grow_ai.daily_routine:main"
+grow-ai-expand   = "grow_ai.expand:main"
+grow-ai-finetune = "grow_ai.finetune:main"
+grow-ai-serve    = "api.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
