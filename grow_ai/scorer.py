@@ -39,10 +39,10 @@ def score(event: dict, compressed: str, framework_tags: list[str]) -> int:
     """Compute quality score for an insight. Higher = more worth learning."""
     total = 0
 
-    tool = event.get("tool", "")
+    tool = event.get("tool_name", event.get("tool", ""))
     total += _TOOL_WEIGHTS.get(tool, 0)
 
-    result = str(event.get("result", ""))
+    result = str(event.get("tool_response", event.get("result", "")))
     if "error" in result.lower() or "fail" in result.lower():
         total += 15
 

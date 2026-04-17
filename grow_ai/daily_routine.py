@@ -16,12 +16,18 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import struct
+
 import httpx
-import sqlite_vec
 
 from grow_ai.config import cfg
 from grow_ai.db import get_connection, init_db, update_reinforcement
 from grow_ai.embed import cosine_similarity
+
+
+def _deserialize_float32(blob: bytes) -> list[float]:
+    n = len(blob) // 4
+    return list(struct.unpack(f"{n}f", blob))
 from grow_ai.expand import run_expansion
 from grow_ai.finetune import run_finetune
 from grow_ai.scorer import apply_temporal_decay
@@ -62,7 +68,7 @@ def run_dedup_maintenance(conn: sqlite3.Connection) -> dict:
 
     # Deserialise all vectors up front
     vectors: list[tuple[int, list[float]]] = [
-        (row[0], list(sqlite_vec.deserialize_float32(row[1])))
+        (row[0], _deserialize_float32(row[1]))
         for row in rows
     ]
 
@@ -251,6 +257,9 @@ def run_growth_report(conn: sqlite3.Connection) -> dict:
 
 def main() -> None:
     """Run the consolidated daily maintenance routine."""
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     started = datetime.now().isoformat()
     print(f"[grow-ai] Daily routine started at {started}")
 
